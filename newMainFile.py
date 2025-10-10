@@ -1,244 +1,254 @@
 import tkinter as tk
-from tkinter import ttk
 from tkinter import messagebox
 import sqlite3
 import random
 
-# --- Main Application Class ---
-# This class manages the main window and all the different screens (frames).
+# --- DATABASE CONFIGURATION ---
+DB_NAME = "rharrellQuiz.db"
+NUM_QUESTIONS = 10
+
+# --- DATABASE HELPER FUNCTIONS ---
+
+def get_quiz_tables():
+    """Fetches the names of all tables (quizzes) from the database."""
+    try:
+        with sqlite3.connect(DB_NAME) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
+            tables = [table[0] for table in cursor.fetchall()]
+            # Filter out internal sqlite tables if any exist
+            return [t for t in tables if not t.startswith('sqlite_')]
+    except sqlite3.Error as e:
+        messagebox.showerror("Database Error", f"Could not connect to database: {e}")
+        return []
+
+def get_questions(table_name):
+    """Fetches a specified number of random questions from a given table."""
+    try:
+        with sqlite3.connect(DB_NAME) as conn:
+            cursor = conn.cursor()
+            # Fetch NUM_QUESTIONS random questions
+            cursor.execute(f'SELECT * FROM "{table_name}" ORDER BY RANDOM() LIMIT {NUM_QUESTIONS}')
+            questions = cursor.fetchall()
+            if len(questions) < NUM_QUESTIONS:
+                messagebox.showwarning("Warning", f"The '{table_name}' quiz has fewer than {NUM_QUESTIONS} questions. The quiz will proceed with {len(questions)} questions.")
+            return questions
+    except sqlite3.Error as e:
+        messagebox.showerror("Database Error", f"Could not fetch questions from table {table_name}: {e}")
+        return []
+
+# --- MAIN APPLICATION CLASS ---
+
 class QuizApp(tk.Tk):
+    """Main application window that manages frames."""
     def __init__(self):
         super().__init__()
-        self.title("R. Harrell Quiz Bowl")
-        self.geometry("600x500")
+        self.title("Quiz Bowl Application")
+        self.geometry("800x600")
 
         # Container for all frames
-        container = ttk.Frame(self)
+        container = tk.Frame(self)
         container.pack(side="top", fill="both", expand=True)
         container.grid_rowconfigure(0, weight=1)
         container.grid_columnconfigure(0, weight=1)
 
         self.frames = {}
-        # Create and store each frame
-        for F in (LoginScreen, QuizSelectionScreen, QuizScreen, ResultsScreen):
+        self.quiz_data = {"table_name": None, "questions": [], "score": 0}
+
+        # Create and store frames
+        for F in (LoginFrame, QuizSelectionFrame, QuizFrame, ResultsFrame):
             frame = F(container, self)
-            self.frames[F] = frame
+            self.frames[F.__name__] = frame
             frame.grid(row=0, column=0, sticky="nsew")
 
-        self.show_frame(LoginScreen)
+        self.show_frame("LoginFrame")
 
-    def show_frame(self, cont, data=None):
-        """Raises the selected frame to the top and can pass data to it."""
-        frame = self.frames[cont]
-        if data:
-            frame.receive_data(data)
+    def show_frame(self, page_name):
+        """Shows the specified frame."""
+        frame = self.frames[page_name]
         frame.tkraise()
+        # Special handling for frames that need refreshing
+        if page_name == "ResultsFrame":
+             frame.show_score() # Update score display when shown
+        if page_name == "QuizSelectionFrame":
+             frame.update_quiz_list() # Update quiz list in case DB changes
 
-# --- Login Screen Frame ---
-# The first screen the user sees.
-class LoginScreen(tk.Frame):
-    def __init__(self, parent, controller):
-        super().__init__(parent)
+    def start_quiz(self, table_name):
+        """Loads quiz data and shows the quiz frame."""
+        self.quiz_data["table_name"] = table_name
+        self.quiz_data["questions"] = get_questions(table_name)
+        self.quiz_data["score"] = 0
         
-        label = ttk.Label(self, text="Welcome to the Quiz Bowl!", font=("Helvetica", 18))
-        label.pack(pady=20, padx=10)
+        if not self.quiz_data["questions"]:
+             messagebox.showerror("Error", "No questions could be loaded for this quiz. Please select another.")
+             return
 
-        student_button = ttk.Button(self, text="Student Login",
-                                   command=lambda: controller.show_frame(QuizSelectionScreen))
-        student_button.pack(pady=10)
-
-        admin_button = ttk.Button(self, text="Admin Login", state="disabled")
-        admin_button.pack(pady=10)
-        
-        admin_info = ttk.Label(self, text="(Admin functionality is not yet implemented)")
-        admin_info.pack(pady=5)
+        # Tell QuizFrame to set up the new quiz
+        self.frames["QuizFrame"].load_new_quiz()
+        self.show_frame("QuizFrame")
 
 
-# --- Quiz Selection Screen Frame ---
-# This screen fetches and displays the available quizzes (tables) from the database.
-class QuizSelectionScreen(tk.Frame):
+# --- GUI FRAMES (SCREENS) ---
+
+class LoginFrame(tk.Frame):
+    """The initial login screen."""
     def __init__(self, parent, controller):
         super().__init__(parent)
         self.controller = controller
         
-        label = ttk.Label(self, text="Select a Quiz", font=("Helvetica", 16))
-        label.pack(pady=20, padx=10)
+        label = tk.Label(self, text="Welcome to Quiz Bowl", font=("Arial", 24, "bold"))
+        label.pack(pady=40, padx=10)
 
-        self.selected_quiz_var = tk.StringVar()
+        student_button = tk.Button(self, text="Student Login", font=("Arial", 16),
+                                   command=lambda: controller.show_frame("QuizSelectionFrame"))
+        student_button.pack(pady=20)
+
+        admin_button = tk.Button(self, text="Admin Login", font=("Arial", 16), state="disabled")
+        admin_button.pack(pady=20)
+
+
+class QuizSelectionFrame(tk.Frame):
+    """Screen for students to select a quiz."""
+    def __init__(self, parent, controller):
+        super().__init__(parent)
+        self.controller = controller
+        self.label = tk.Label(self, text="Please Select a Quiz", font=("Arial", 24, "bold"))
+        self.label.pack(pady=40, padx=10)
         
-        # This OptionMenu will be populated with quiz names from the database
-        self.quiz_menu = ttk.OptionMenu(self, self.selected_quiz_var, "Select a quiz...")
-        self.quiz_menu.pack(pady=10)
+        self.quiz_buttons_frame = tk.Frame(self)
+        self.quiz_buttons_frame.pack(pady=10)
 
-        start_button = ttk.Button(self, text="Start Quiz", command=self.start_quiz)
-        start_button.pack(pady=20)
-        
-        # Populate the menu when the frame is raised
-        self.bind("<<ShowFrame>>", self.on_show_frame)
+        self.update_quiz_list()
 
-    def on_show_frame(self, event):
-        """Called when the frame is shown to refresh the quiz list."""
-        self.populate_quizzes()
-        
-    def populate_quizzes(self):
-        """Connects to the DB and fetches the table names to display."""
-        try:
-            conn = sqlite3.connect('rharrellQuiz.db')
-            cursor = conn.cursor()
-            # This query gets all table names from the database
-            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%';")
-            # Fetch all table names, which are returned as tuples
-            tables = [table[0] for table in cursor.fetchall()]
-            conn.close()
+    def update_quiz_list(self):
+        # Clear old buttons
+        for widget in self.quiz_buttons_frame.winfo_children():
+            widget.destroy()
 
-            # Update the OptionMenu with the fetched table names
-            menu = self.quiz_menu["menu"]
-            menu.delete(0, "end")
-            if tables:
-                for table in tables:
-                    menu.add_command(label=table, command=lambda value=table: self.selected_quiz_var.set(value))
-                self.selected_quiz_var.set(tables[0]) # Default to the first quiz
-            else:
-                self.selected_quiz_var.set("No quizzes found")
-                
-        except sqlite3.Error as e:
-            messagebox.showerror("Database Error", f"Could not connect to database or find tables.\nError: {e}")
-            self.selected_quiz_var.set("Error loading quizzes")
-
-    def start_quiz(self):
-        """Starts the selected quiz."""
-        selected_quiz = self.selected_quiz_var.get()
-        if selected_quiz and "Select" not in selected_quiz and "Error" not in selected_quiz and "No quizzes" not in selected_quiz:
-             # Pass the selected table name to the QuizScreen
-            self.controller.show_frame(QuizScreen, data={"quiz_name": selected_quiz})
+        # Create buttons for each quiz table
+        tables = get_quiz_tables()
+        if not tables:
+             no_quiz_label = tk.Label(self.quiz_buttons_frame, text="No quizzes found in the database.", font=("Arial", 14))
+             no_quiz_label.pack()
         else:
-            messagebox.showwarning("Selection Error", "Please select a valid quiz to start.")
+            for table_name in tables:
+                button = tk.Button(self.quiz_buttons_frame, text=table_name, font=("Arial", 16),
+                                   command=lambda t=table_name: self.controller.start_quiz(t))
+                button.pack(pady=10)
 
-
-# --- Quiz Screen Frame ---
-# This frame displays the questions, options, and handles quiz logic.
-class QuizScreen(tk.Frame):
+class QuizFrame(tk.Frame):
+    """The main screen for taking the quiz."""
     def __init__(self, parent, controller):
         super().__init__(parent)
         self.controller = controller
         
-        self.question_label = ttk.Label(self, text="Question text will go here", font=("Helvetica", 14), wraplength=550, justify="center")
+        self.question_number_label = tk.Label(self, text="", font=("Arial", 16))
+        self.question_number_label.pack(pady=20)
+
+        self.question_label = tk.Label(self, text="", font=("Arial", 18, "bold"), wraplength=700)
         self.question_label.pack(pady=20, padx=20)
 
-        self.user_answer = tk.StringVar()
-        self.radio_buttons = []
+        self.selected_option = tk.StringVar()
+        self.option_buttons = []
+        options_frame = tk.Frame(self)
+        options_frame.pack(pady=20)
+
         for i in range(4):
-            rb = ttk.Radiobutton(self, text="", variable=self.user_answer, value="")
-            rb.pack(anchor="w", padx=40, pady=5)
-            self.radio_buttons.append(rb)
+            btn = tk.Radiobutton(options_frame, text="", variable=self.selected_option, 
+                                 value="", font=("Arial", 14), indicatoron=0, 
+                                 width=40, padx=20, pady=10)
+            btn.pack(pady=5)
+            self.option_buttons.append(btn)
 
-        self.submit_button = ttk.Button(self, text="Submit Answer", command=self.next_question)
-        self.submit_button.pack(pady=20)
+        self.submit_button = tk.Button(self, text="Submit Answer", font=("Arial", 16), command=self.next_question)
+        self.submit_button.pack(pady=30)
 
-    def receive_data(self, data):
-        """Receives the quiz name and loads the questions."""
-        quiz_name = data.get("quiz_name")
-        if quiz_name:
-            self.load_quiz(quiz_name)
+    def load_new_quiz(self):
+        """Resets and loads the UI for the start of a new quiz."""
+        self.current_question_index = 0
+        self.display_current_question()
 
-    def load_quiz(self, table_name):
-        """Fetches questions from the selected table in the database."""
-        try:
-            conn = sqlite3.connect('rharrellQuiz.db')
-            cursor = conn.cursor()
-            # SQL queries with table names containing spaces need double quotes
-            cursor.execute(f'SELECT * FROM "{table_name}"')
-            self.questions = cursor.fetchall()
-            conn.close()
+    def display_current_question(self):
+        """Updates the labels and buttons for the current question."""
+        questions = self.controller.quiz_data["questions"]
+        if self.current_question_index < len(questions):
+            question_data = questions[self.current_question_index]
             
-            # Shuffle the questions for variety
-            random.shuffle(self.questions)
-
-            # Reset quiz state
-            self.current_question_index = 0
-            self.score = 0
+            # Unpack data, assuming the last column is the correct letter (A, B, C, or D)
+            q_id, q_text, opt_a, opt_b, opt_c, opt_d, correct_letter = question_data
             
-            if not self.questions:
-                messagebox.showerror("Quiz Error", f"No questions found in the '{table_name}' quiz.")
-                self.controller.show_frame(QuizSelectionScreen)
+            # Create a map of letters to the actual answer text
+            answer_map = {'A': opt_a, 'B': opt_b, 'C': opt_c, 'D': opt_d}
+            
+            # Find the full text of the correct answer using the letter
+            clean_letter = correct_letter.strip().upper()
+            self.correct_answer_text = answer_map.get(clean_letter)
+            
+            if self.correct_answer_text is None:
+                messagebox.showerror("Data Error", f"Invalid correct answer letter ('{correct_letter}') found in database for question: '{q_text}'")
+                self.controller.show_frame("QuizSelectionFrame")
                 return
-            
-            self.display_question()
 
-        except sqlite3.Error as e:
-            messagebox.showerror("Database Error", f"Failed to load questions from '{table_name}'.\nError: {e}")
-            self.controller.show_frame(QuizSelectionScreen)
-
-    def display_question(self):
-        """Updates the GUI with the current question and options."""
-        if self.current_question_index < len(self.questions):
-            q_data = self.questions[self.current_question_index]
-            # q_data tuple: (id, question, option_a, option_b, option_c, option_d, correct_answer)
-            question_text = q_data[1]
+            self.question_number_label.config(text=f"Question {self.current_question_index + 1}/{len(questions)}")
+            self.question_label.config(text=q_text)
             
-            # THE FIX IS HERE: Convert the tuple slice to a list
-            options = list(q_data[2:6])
-
-            self.question_label.config(text=f"Q{self.current_question_index + 1}: {question_text}")
+            # Display options in a fixed order (A, B, C, D)
+            options = [opt_a, opt_b, opt_c, opt_d]
             
-            # Shuffle the options for this question
-            random.shuffle(options)
-            
-            self.user_answer.set(None) # Deselect radio buttons
+            self.selected_option.set(None)
 
-            for i, option in enumerate(options):
-                self.radio_buttons[i].config(text=option, value=option)
-                
-            self.submit_button.config(text="Submit Answer")
-            if self.current_question_index == len(self.questions) - 1:
-                self.submit_button.config(text="Finish Quiz")
+            for i, option_text in enumerate(options):
+                self.option_buttons[i].config(text=option_text, value=option_text)
+        else:
+            # End of quiz
+            self.controller.show_frame("ResultsFrame")
 
     def next_question(self):
-        """Checks the user's answer and moves to the next question or the results screen."""
-        selected_answer = self.user_answer.get()
-        if not selected_answer or selected_answer == 'None':
-            messagebox.showwarning("No Answer", "Please select an answer before proceeding.")
+        """Checks the answer and moves to the next question or results."""
+        selected_answer = self.selected_option.get()
+        if not selected_answer:
+            messagebox.showwarning("No Selection", "Please select an answer before proceeding.")
             return
 
-        correct_answer = self.questions[self.current_question_index][6]
-
-        if selected_answer == correct_answer:
-            self.score += 1
+        # Compare the selected full text with the correct full text
+        if selected_answer.strip().lower() == self.correct_answer_text.strip().lower():
+            self.controller.quiz_data["score"] += 1
         
         self.current_question_index += 1
+        self.display_current_question()
 
-        if self.current_question_index < len(self.questions):
-            self.display_question()
-        else:
-            # Quiz is over, show the results screen
-            result_data = {"score": self.score, "total": len(self.questions)}
-            self.controller.show_frame(ResultsScreen, data=result_data)
-
-
-# --- Results Screen Frame ---
-# The final screen showing the user's score.
-class ResultsScreen(tk.Frame):
+class ResultsFrame(tk.Frame):
+    """The final screen showing the quiz score."""
     def __init__(self, parent, controller):
         super().__init__(parent)
         self.controller = controller
         
-        self.result_label = ttk.Label(self, text="", font=("Helvetica", 18))
-        self.result_label.pack(pady=40, padx=20)
+        self.label = tk.Label(self, text="Quiz Complete!", font=("Arial", 24, "bold"))
+        self.label.pack(pady=40)
+
+        self.score_label = tk.Label(self, text="", font=("Arial", 20))
+        self.score_label.pack(pady=20)
+
+        home_button = tk.Button(self, text="Take Another Quiz", font=("Arial", 16),
+                                command=lambda: controller.show_frame("QuizSelectionFrame"))
+        home_button.pack(pady=20)
+    
+    def show_score(self):
+        """Updates the score label with the final score."""
+        score = self.controller.quiz_data["score"]
+        total = len(self.controller.quiz_data["questions"])
         
-        return_button = ttk.Button(self, text="Take Another Quiz",
-                                  command=lambda: controller.show_frame(QuizSelectionScreen))
-        return_button.pack(pady=20)
-
-    def receive_data(self, data):
-        """Receives the final score and total questions to display."""
-        score = data.get("score")
-        total = data.get("total")
-        self.result_label.config(text=f"Quiz Complete!\n\nYour Score: {score} out of {total}")
+        # Calculate score out of 10
+        if total > 0:
+            score_out_of_10 = round((score / total) * 10, 1)
+        else:
+            score_out_of_10 = 0
+            
+        self.score_label.config(text=f"You scored {score} out of {total}.\n\nYour final score is: {score_out_of_10} / 10")
 
 
-# --- Main execution block ---
+# --- RUN THE APPLICATION ---
+
 if __name__ == "__main__":
     app = QuizApp()
-    # This is a trick to raise the QuizSelectionScreen frame and trigger its on_show_frame method on startup
-    app.frames[QuizSelectionScreen].event_generate("<<ShowFrame>>")
     app.mainloop()
